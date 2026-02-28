@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>猜四位数（联机房间版：链接即房间）</title>
+
+  <!-- 强制生成 #room=XXXX -->
+  <script>
+    (function () {
+      function makeRoomId() {
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        let s = "";
+        for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+        return s;
+      }
+      const h = (location.hash || "").replace(/^#/, "");
+      if (!/room=([a-zA-Z0-9_-]{4,32})/.test(h)) location.hash = "room=" + makeRoomId();
+    })();
+  </script>
+
+  <style>
+    :root{color-scheme:dark}
+    body{margin:0;font-family:system-ui;background:#0f1115;color:#e7e9ee;display:grid;place-items:start center;min-height:100vh}
+    .wrap{width:min(1200px,94vw);padding:22px 0 40px}
+    h1{font-size:20px;margin:0 0 12px}
+    .card{background:#151a22;border:1px solid #262c36;border-radius:14px;padding:16px;box-shadow:0 6px 20px rgba(0,0,0,.25);margin-bottom:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:#0f131b;border:1px solid #2a3140;font-size:13px}
+    input,button{border-radius:10px;border:1px solid #2a3140;background:#0f131b;color:#e7e9ee;padding:10px 12px;font-size:14px;outline:none}
+    input.small{width:190px}
+    button{cursor:pointer;background:#1b2330;border-color:#344055}
+    button.primary{background:#2a3a58;border-color:#415a85}
+    button.danger{background:#3a1f25;border-color:#6b2a33}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .muted{opacity:.85;font-size:13px}
+    .hr{height:1px;background:#262c36;margin:12px 0}
+    .debug{margin-top:12px;padding:10px 12px;border:1px solid #2a3140;border-radius:10px;background:#0f131b;font-size:13px;opacity:.92;white-space:pre-wrap}
+
+    .cols{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:10px}
+    .col{background:#0f131b;border:1px solid #2a3140;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;min-height:260px}
+    .colHead{padding:10px 12px;border-bottom:1px solid #2a3140;display:flex;justify-content:space-between;gap:10px;font-size:13px;background:rgba(255,255,255,0.02)}
+    .colHead .title{font-weight:650}
+    .colHead .sub{opacity:.75;font-size:12px}
+    .colBody{padding:10px 12px;overflow:auto;flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;white-space:pre-wrap;line-height:1.5}
+    .ok{color:#7ee787}
+    .cur{outline:2px solid rgba(126,231,135,.35)}
+  </style>
+
+  <!-- Supabase SDK -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+  <!-- 主脚本 -->
+  <script defer>
+  (() => {
+    // ====== 只改这两行（从 Supabase Data API 复制）======
+    const SUPABASE_URL = "https://yugpntcbnxgqgfcupewi.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_9rpn0QDQOxqyrpOX7zZWNA_JNiXVlu_";
+
+    const digitsOnly = (s)=>(s||"").replace(/\D/g,"");
+    const is4Digits = (s)=>/^\d{4}$/.test(s);
+    const scoreExact = (target4, guess4) => {
+      let c=0;
+      for(let i=0;i<4;i++) if(target4[i]===guess4[i]) c++;
+      return c;
+    };
+
+    function getRoomIdFromHash(){
+      const h = (location.hash || "").replace(/^#/, "");
+      const m = h.match(/room=([a-zA-Z0-9_-]{4,32})/);
+      return m ? m[1] : null;
+    }
+
+    // 全局按钮（先占位）
+    window.__copyRoomLink = () => prompt("复制下面链接发给朋友：", location.href);
+    window.__leaveRoom = () => location.reload();
+    window.__joinRoom = () => alert("页面还在初始化，请稍等");
+    window.__setSecret = () => alert("页面还在初始化，请稍等");
+    window.__startGame = () => alert("页面还在初始化，请稍等");
+    window.__resetRoom = () => alert("页面还在初始化，请稍等");
+    window.__submitGuess = () => alert("页面还在初始化，请稍等");
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      const $ = (s)=>document.querySelector(s);
+      const setDebug = (msg)=>{ $("#debugBar").textContent = "debug: " + msg; };
+      const addDebug = (msg)=>{ $("#debugBar").textContent += "\n" + msg; };
+      const setLobby = (msg)=>{ $("#lobbyInfo").textContent = msg; };
+
+      const room_id = getRoomIdFromHash();
+      const roomUrl = `${location.origin}${location.pathname}#room=${room_id}`;
+
+      $("#roomPill").textContent = `Room: ${room_id}`;
+      $("#joinHint").textContent = `房间链接：${roomUrl}`;
+      $("#joinHint").style.userSelect = "text";
+
+      $("#copyLinkBtn").onclick = window.__copyRoomLink;
+      $("#leaveBtn").onclick = window.__leaveRoom;
+
+      $("#secretInput").addEventListener("input", ()=> $("#secretInput").value = digitsOnly($("#secretInput").value).slice(0,4));
+      $("#guessInput").addEventListener("input", ()=> $("#guessInput").value = digitsOnly($("#guessInput").value).slice(0,4));
+
+      setLobby("页面已加载。下一步：输入名字 → 加入房间。");
+      setDebug("主脚本已运行 ✅");
+
+      // init supabase
+      let sb = null;
+      try{
+        if(!window.supabase) throw new Error("window.supabase is null（SDK 未加载）");
+        sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        $("#statusPill").textContent = "Status: SDK OK";
+        addDebug("SDK OK ✅");
+      }catch(e){
+        console.error(e);
+        $("#statusPill").textContent = "Status: SDK FAILED";
+        addDebug("SDK FAILED ❌: " + (e?.message || e));
+        setLobby("❌ Supabase 初始化失败：看控制台。");
+        return;
+      }
+
+      // state
+      let me_id = localStorage.getItem(`me_player_id:${room_id}`) || "";
+      let players = [];
+      let room = null;
+      let guesses = [];
+
+      const isHost = () => me_id && players.length>0 && players[0].id === me_id;
+      const curTurnPlayer = () => players[(room?.turn_index||0)] || null;
+      const targetOfIndex = (i) => players.length ? players[(i-1+players.length)%players.length] : null;
+      const targetOfTurn = () => targetOfIndex(room?.turn_index||0);
+
+      function renderHeader(){
+        const cur = curTurnPlayer();
+        const tgt = targetOfTurn();
+        $("#mePill").textContent = me_id ? `Me: ${($("#nameInput").value||"").trim() || "(已加入)"}` : "Me";
+        $("#turnPill").textContent = room ? `回合：${cur?cur.name:"?"}` : "回合";
+        $("#targetPill").textContent = room ? `目标：${tgt?tgt.name:"?"}` : "目标";
+
+        const canStart = isHost() && room?.status==="setup" && players.length>=2 && players.every(p=>p.ready);
+        $("#startGameBtn").disabled = !canStart;
+
+        const canReset = isHost();
+        $("#resetRoomBtn").disabled = !canReset;
+
+        const myTurn = cur && me_id && cur.id===me_id;
+        const canGuess = room?.status==="playing" && myTurn;
+        $("#guessBtn").disabled = !canGuess;
+        $("#guessInput").disabled = !canGuess;
+
+        $("#hintText").textContent =
+          !room ? "等待房间初始化..."
+          : room.status==="setup" ? (players.every(p=>p.ready) ? "房主可以开始游戏" : "等待所有人提交四位数") 
+          : room.status==="playing" ? (canGuess ? "轮到你猜上一位玩家" : "等待其他玩家操作")
+          : "游戏结束";
+      }
+
+      function renderColumns(){
+        const cols = $("#cols");
+        cols.innerHTML = "";
+
+        for(let i=0;i<players.length;i++){
+          const p = players[i];
+          const tgt = targetOfIndex(i);
+
+          const col = document.createElement("div");
+          col.className = "col";
+          col.id = `col_${p.id}`;
+          if(room && room.status==="playing" && players[room.turn_index]?.id === p.id){
+            col.classList.add("cur");
+          }
+
+          const head = document.createElement("div");
+          head.className = "colHead";
+          head.innerHTML = `
+            <div>
+              <div class="title">${p.name} 猜 ${tgt?tgt.name:"?"}</div>
+              <div class="sub">${p.ready ? "已提交四位数" : "未就绪"}</div>
+            </div>
+            <div class="sub" id="colStat_${p.id}">0 次</div>
+          `;
+          const body = document.createElement("div");
+          body.className = "colBody";
+          body.id = `colBody_${p.id}`;
+
+          col.appendChild(head);
+          col.appendChild(body);
+          cols.appendChild(col);
+        }
+
+        // 填充历史
+        const cnt = {};
+        for(const g of guesses){
+          cnt[g.guesser_player_id] = (cnt[g.guesser_player_id]||0)+1;
+          const body = document.getElementById(`colBody_${g.guesser_player_id}`);
+          if(body){
+            const line = document.createElement("span");
+            if(g.score===4) line.className="ok";
+            line.textContent = `${g.guess}  => 按位正确 ${g.score} 个${g.score===4?" ✅":""}\n`;
+            body.appendChild(line);
+            body.scrollTop = body.scrollHeight;
+          }
+        }
+        for(const p of players){
+          const el = document.getElementById(`colStat_${p.id}`);
+          if(el) el.textContent = `${cnt[p.id]||0} 次`;
+        }
+      }
+
+      async function fetchAll(){
+        // room
+        const r1 = await sb.from("rooms").select("*").eq("id", room_id).maybeSingle();
+        room = r1.data || null;
+
+        // players
+        const r2 = await sb.from("players").select("*").eq("room_id", room_id).order("joined_at");
+        players = r2.data || [];
+
+        // guesses
+        const r3 = await sb.from("guesses").select("*").eq("room_id", room_id).order("created_at");
+        guesses = r3.data || [];
+
+        // UI
+        $("#gameCard").style.display = players.length>=2 ? "" : "none";
+        setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"}`);
+
+        renderHeader();
+        renderColumns();
+      }
+
+      function subscribeRealtime(){
+        const ch = sb.channel(`room:${room_id}`);
+        ch.on("postgres_changes", { event:"*", schema:"public", table:"rooms", filter:`id=eq.${room_id}` }, fetchAll);
+        ch.on("postgres_changes", { event:"*", schema:"public", table:"players", filter:`room_id=eq.${room_id}` }, fetchAll);
+        ch.on("postgres_changes", { event:"*", schema:"public", table:"guesses", filter:`room_id=eq.${room_id}` }, fetchAll);
+        ch.subscribe();
+      }
+
+      async function ensureRoom(){
+        const { error } = await sb.from("rooms").upsert(
+          { id: room_id, status: "setup", turn_index: 0, player_count: 0, winner_id: null },
+          { onConflict: "id" }
+        );
+        if(error) throw error;
+      }
+
+      // actions
+      window.__joinRoom = async () => {
+        const name = ($("#nameInput").value||"").trim();
+        if(!name) return alert("请输入名字");
+        try{
+          await ensureRoom();
+          const { data, error } = await sb
+            .from("players")
+            .insert({ room_id, name, is_bot:false, ready:false, secret_plain:null })
+            .select("*")
+            .single();
+          if(error) throw error;
+
+          me_id = data.id;
+          localStorage.setItem(`me_player_id:${room_id}`, me_id);
+          addDebug("join success, player_id=" + me_id);
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          addDebug("join failed: " + (e?.message||e));
+          alert("加入失败：" + (e?.message||e));
+        }
+      };
+
+      window.__setSecret = async () => {
+        if(!me_id) return alert("请先加入房间");
+        let s = digitsOnly($("#secretInput").value).slice(0,4);
+        $("#secretInput").value = s;
+        if(!is4Digits(s)) return alert("请输入完整4位数字");
+        try{
+          const { error } = await sb.from("players").update({ secret_plain: s, ready: true }).eq("id", me_id);
+          if(error) throw error;
+          $("#secretHint").textContent = "✅ 已提交秘密（ready=true）";
+          addDebug("setSecret success");
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          addDebug("setSecret failed: " + (e?.message||e));
+          alert("提交失败：" + (e?.message||e));
+        }
+      };
+
+      window.__startGame = async () => {
+        if(!isHost()) return alert("只有房主可以开始");
+        if(players.length<2) return alert("至少2人");
+        if(players.some(p=>!p.ready)) return alert("还有人没提交四位数");
+
+        try{
+          const { data, error } = await sb
+            .from("rooms")
+            .update({ status:"playing", turn_index:0, winner_id:null })
+            .eq("id", room_id)
+            .select("*")
+            .single();
+
+          if(error) throw error;
+
+          addDebug("game started ✅ status=" + data.status);
+          await fetchAll(); // 立刻刷新 UI
+        }catch(e){
+          console.error(e);
+          addDebug("start failed: " + (e?.message||e));
+          alert("开始失败：" + (e?.message||e));
+        }
+      };
+
+      window.__resetRoom = async () => {
+        if(!isHost()) return alert("只有房主可以重置");
+        try{
+          await sb.from("guesses").delete().eq("room_id", room_id);
+          await sb.from("players").update({ ready:false, secret_plain:null }).eq("room_id", room_id);
+          await sb.from("rooms").update({ status:"setup", turn_index:0, winner_id:null }).eq("id", room_id);
+          addDebug("room reset");
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          alert("重置失败：" + (e?.message||e));
+        }
+      };
+
+      window.__submitGuess = async () => {
+        if(!room || room.status!=="playing") return;
+        const cur = curTurnPlayer();
+        if(!cur || cur.id!==me_id) return alert("还没轮到你");
+
+        let guess = digitsOnly($("#guessInput").value).slice(0,4);
+        $("#guessInput").value = guess;
+        if(!is4Digits(guess)) return alert("请输入完整4位数字");
+
+        const target = targetOfTurn();
+        if(!target) return;
+
+        if(!target.secret_plain || !is4Digits(target.secret_plain)){
+          return alert("目标玩家还没提交四位数");
+        }
+
+        const score = scoreExact(target.secret_plain, guess);
+
+        try{
+          // 写入 guess
+          const { error } = await sb.from("guesses").insert({
+            room_id,
+            turn_index: room.turn_index||0,
+            guesser_player_id: cur.id,
+            target_player_id: target.id,
+            guess,
+            score
+          });
+          if(error) throw error;
+
+          // 更新 room：胜利 or 下一回合
+          if(score===4){
+            await sb.from("rooms").update({ status:"ended", winner_id: cur.id }).eq("id", room_id);
+          }else{
+            const nextTurn = ((room.turn_index||0)+1) % players.length;
+            await sb.from("rooms").update({ turn_index: nextTurn }).eq("id", room_id);
+          }
+          $("#guessInput").value="";
+        }catch(e){
+          console.error(e);
+          alert("提交猜测失败：" + (e?.message||e));
+        }
+      };
+
+      // bind buttons
+      $("#joinBtn").onclick = window.__joinRoom;
+      $("#setSecretBtn").onclick = window.__setSecret;
+      $("#startGameBtn").onclick = window.__startGame;
+      $("#resetRoomBtn").onclick = window.__resetRoom;
+      $("#guessBtn").onclick = window.__submitGuess;
+
+      // kick off
+      await ensureRoom();
+      await fetchAll();
+      subscribeRealtime();
+    });
+  })();
+  </script>
+</head>
+
+<body>
+<div class="wrap">
+  <h1>猜四位数（联机房间版：链接即房间）</h1>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <span class="pill" id="roomPill">Room</span>
+        <span class="pill" id="mePill">Me</span>
+        <span class="pill" id="statusPill">Status</span>
+      </div>
+      <div class="row">
+        <button id="copyLinkBtn" onclick="window.__copyRoomLink()">复制房间链接</button>
+        <button class="danger" id="leaveBtn" onclick="window.__leaveRoom()">退出房间</button>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <label class="muted">你的名字</label>
+      <input id="nameInput" class="small" placeholder="例如 A" />
+      <button id="joinBtn" class="primary">加入房间</button>
+      <span class="muted" id="joinHint"></span>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <label class="muted">设置你的四位数</label>
+      <input id="secretInput" class="small" placeholder="例如 0854" maxlength="4" inputmode="numeric" autocomplete="off" />
+      <button id="setSecretBtn" class="primary">提交秘密</button>
+      <span class="muted" id="secretHint"></span>
+    </div>
+
+    <div class="hr"></div>
+    <div class="muted" id="lobbyInfo"></div>
+    <div class="debug" id="debugBar">debug: (loading...)</div>
+  </div>
+
+  <div class="card" id="gameCard" style="display:none;">
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <span class="pill" id="turnPill">回合</span>
+        <span class="pill" id="targetPill">目标</span>
+      </div>
+      <div class="row">
+        <button id="startGameBtn" class="primary">房主开始</button>
+        <button id="resetRoomBtn" class="danger">重置房间</button>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <label>输入猜测</label>
+      <input id="guessInput" class="small" placeholder="4位数字" maxlength="4" inputmode="numeric" autocomplete="off" />
+      <button id="guessBtn" class="primary">提交猜测</button>
+      <span class="muted" id="hintText"></span>
+    </div>
+
+    <div class="hr"></div>
+    <div id="cols" class="cols"></div>
+  </div>
+
+</div>
+</body>
+</html>
