@@ -362,18 +362,78 @@
         }
       };
 
+      // 生成/读取本机唯一 client_id（每台设备一个）
+      function getClientId(room_id){
+        const k = `client_id:${room_id}`;
+        let v = localStorage.getItem(k);
+        if(!v){
+          v = (crypto.randomUUID ? crypto.randomUUID() : (Date.now()+"_"+Math.random().toString(16).slice(2)));
+          localStorage.setItem(k, v);
+        }
+        return v;
+      }
+      
+      let joining = false;
+      
       window.__joinRoom = async () => {
+        if(joining) return; // 防连点
+        if(me_id) return alert("你已经加入过这个房间了（刷新页面即可继续）。");
+      
         const name = ($("#nameInput").value||"").trim();
         if(!name) return alert("请输入名字");
+      
+        joining = true;
+        $("#joinBtn").disabled = true;
+      
         try{
           await ensureRoom();
+      
+          const client_id = getClientId(room_id);
+      
+          // ✅ 先查是否已经存在（防止之前成功但页面没记住）
+          const existed = await sb
+            .from("players")
+            .select("*")
+            .eq("room_id", room_id)
+            .eq("client_id", client_id)
+            .maybeSingle();
+      
+          if(existed.data){
+            me_id = existed.data.id;
+            localStorage.setItem(`me_player_id:${room_id}`, me_id);
+            $("#mePill").textContent = `Me: ${existed.data.name}`;
+            addDebug("join reuse existing player_id=" + me_id);
+            await fetchAll();
+            return;
+          }
+      
+          // ✅ 再插入（数据库唯一索引兜底）
           const { data, error } = await sb
             .from("players")
-            .insert({ room_id, name, is_bot:false, ready:false, secret_plain:null })
+            .insert({ room_id, name, client_id, is_bot:false, ready:false, secret_plain:null })
             .select("*")
             .single();
-          if(error) throw error;
-
+      
+          if(error){
+            // 如果恰好并发/重复点击导致唯一冲突，再查一次拿到已有行
+            if(String(error.message||"").toLowerCase().includes("duplicate") || String(error.code||"")==="23505"){
+              const again = await sb
+                .from("players")
+                .select("*")
+                .eq("room_id", room_id)
+                .eq("client_id", client_id)
+                .maybeSingle();
+              if(again.data){
+                me_id = again.data.id;
+                localStorage.setItem(`me_player_id:${room_id}`, me_id);
+                addDebug("join recovered existing player_id=" + me_id);
+                await fetchAll();
+                return;
+              }
+            }
+            throw error;
+          }
+      
           me_id = data.id;
           localStorage.setItem(`me_player_id:${room_id}`, me_id);
           addDebug("join success, player_id=" + me_id);
@@ -382,6 +442,9 @@
           console.error(e);
           addDebug("join failed: " + (e?.message||e));
           alert("加入失败：" + (e?.message||e));
+        }finally{
+          joining = false;
+          $("#joinBtn").disabled = false;
         }
       };
 
@@ -588,3 +651,4 @@
 
 </body>
 </html>
+
