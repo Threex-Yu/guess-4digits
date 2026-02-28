@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>猜四位数（联机房间版：链接即房间）</title>
+  <title>猜数字（联机房间版：链接即房间）</title>
 
   <!-- 强制生成 #room=XXXX -->
   <script>
@@ -32,6 +32,8 @@
     button{cursor:pointer;background:#1b2330;border-color:#344055}
     button.primary{background:#2a3a58;border-color:#415a85}
     button.danger{background:#3a1f25;border-color:#6b2a33}
+    button.ghost{background:#0f131b;border-color:#2a3140}
+    button.active{outline:2px solid rgba(126,231,135,.45)}
     button:disabled{opacity:.55;cursor:not-allowed}
     .muted{opacity:.85;font-size:13px}
     .hr{height:1px;background:#262c36;margin:12px 0}
@@ -58,12 +60,15 @@
     const SUPABASE_ANON_KEY = "sb_publishable_9rpn0QDQOxqyrpOX7zZWNA_JNiXVlu_";
 
     const digitsOnly = (s)=>(s||"").replace(/\D/g,"");
-    const is4Digits = (s)=>/^\d{4}$/.test(s);
-    const scoreExact = (target4, guess4) => {
+
+    function isNDigits(s, n){ return new RegExp(`^\\d{${n}}$`).test(s); }
+
+    function scoreExactN(target, guess){
+      const n = Math.min(target.length, guess.length);
       let c=0;
-      for(let i=0;i<4;i++) if(target4[i]===guess4[i]) c++;
+      for(let i=0;i<n;i++) if(target[i]===guess[i]) c++;
       return c;
-    };
+    }
 
     function getRoomIdFromHash(){
       const h = (location.hash || "").replace(/^#/, "");
@@ -79,6 +84,7 @@
     window.__startGame = () => alert("页面还在初始化，请稍等");
     window.__resetRoom = () => alert("页面还在初始化，请稍等");
     window.__submitGuess = () => alert("页面还在初始化，请稍等");
+    window.__setDigits = (n) => alert("页面还在初始化，请稍等");
 
     document.addEventListener("DOMContentLoaded", async () => {
       const $ = (s)=>document.querySelector(s);
@@ -95,9 +101,6 @@
 
       $("#copyLinkBtn").onclick = window.__copyRoomLink;
       $("#leaveBtn").onclick = window.__leaveRoom;
-
-      $("#secretInput").addEventListener("input", ()=> $("#secretInput").value = digitsOnly($("#secretInput").value).slice(0,4));
-      $("#guessInput").addEventListener("input", ()=> $("#guessInput").value = digitsOnly($("#guessInput").value).slice(0,4));
 
       setLobby("页面已加载。下一步：输入名字 → 加入房间。");
       setDebug("主脚本已运行 ✅");
@@ -122,11 +125,36 @@
       let players = [];
       let room = null;
       let guesses = [];
+      let curDigits = 4; // 默认
 
       const isHost = () => me_id && players.length>0 && players[0].id === me_id;
       const curTurnPlayer = () => players[(room?.turn_index||0)] || null;
       const targetOfIndex = (i) => players.length ? players[(i-1+players.length)%players.length] : null;
       const targetOfTurn = () => targetOfIndex(room?.turn_index||0);
+
+      function applyDigitsToInputs(){
+        // secret
+        $("#secretInput").maxLength = curDigits;
+        $("#secretInput").placeholder = `例如 ${"0".repeat(Math.max(0,curDigits-1))}854`.slice(0, 2 + curDigits); // 粗略
+        $("#secretInput").value = digitsOnly($("#secretInput").value).slice(0, curDigits);
+
+        // guess
+        $("#guessInput").maxLength = curDigits;
+        $("#guessInput").placeholder = `${curDigits}位数字`;
+        $("#guessInput").value = digitsOnly($("#guessInput").value).slice(0, curDigits);
+
+        // 顶部按钮高亮
+        $("#d3Btn").classList.toggle("active", curDigits===3);
+        $("#d4Btn").classList.toggle("active", curDigits===4);
+        $("#d5Btn").classList.toggle("active", curDigits===5);
+      }
+
+      $("#secretInput").addEventListener("input", ()=> {
+        $("#secretInput").value = digitsOnly($("#secretInput").value).slice(0, curDigits);
+      });
+      $("#guessInput").addEventListener("input", ()=> {
+        $("#guessInput").value = digitsOnly($("#guessInput").value).slice(0, curDigits);
+      });
 
       function renderHeader(){
         const cur = curTurnPlayer();
@@ -141,16 +169,28 @@
         const canReset = isHost();
         $("#resetRoomBtn").disabled = !canReset;
 
+        // ✅ 硬限制：只有轮到我才能输入和提交
         const myTurn = cur && me_id && cur.id===me_id;
         const canGuess = room?.status==="playing" && myTurn;
+
         $("#guessBtn").disabled = !canGuess;
         $("#guessInput").disabled = !canGuess;
 
         $("#hintText").textContent =
           !room ? "等待房间初始化..."
-          : room.status==="setup" ? (players.every(p=>p.ready) ? "房主可以开始游戏" : "等待所有人提交四位数") 
-          : room.status==="playing" ? (canGuess ? "轮到你猜上一位玩家" : "等待其他玩家操作")
+          : room.status==="setup"
+              ? (players.every(p=>p.ready) ? "房主可以开始游戏" : "等待所有人提交数字")
+          : room.status==="playing"
+              ? (canGuess ? `轮到你猜上一位玩家（${curDigits}位）` : "等待其他玩家操作")
           : "游戏结束";
+
+        // digits 按钮：setup 时任何人都能切；playing/ended 只能房主切（并会重置）
+        const canChangeDigitsFree = room?.status==="setup";
+        const canChangeDigitsHost = isHost() && room?.status!=="setup";
+        const enableDigitsBtns = canChangeDigitsFree || canChangeDigitsHost;
+        $("#d3Btn").disabled = !enableDigitsBtns;
+        $("#d4Btn").disabled = !enableDigitsBtns;
+        $("#d5Btn").disabled = !enableDigitsBtns;
       }
 
       function renderColumns(){
@@ -173,7 +213,7 @@
           head.innerHTML = `
             <div>
               <div class="title">${p.name} 猜 ${tgt?tgt.name:"?"}</div>
-              <div class="sub">${p.ready ? "已提交四位数" : "未就绪"}</div>
+              <div class="sub">${p.ready ? `已提交（${curDigits}位）` : "未就绪"}</div>
             </div>
             <div class="sub" id="colStat_${p.id}">0 次</div>
           `;
@@ -186,15 +226,14 @@
           cols.appendChild(col);
         }
 
-        // 填充历史
         const cnt = {};
         for(const g of guesses){
           cnt[g.guesser_player_id] = (cnt[g.guesser_player_id]||0)+1;
           const body = document.getElementById(`colBody_${g.guesser_player_id}`);
           if(body){
             const line = document.createElement("span");
-            if(g.score===4) line.className="ok";
-            line.textContent = `${g.guess}  => 按位正确 ${g.score} 个${g.score===4?" ✅":""}\n`;
+            if(g.score===curDigits) line.className="ok";
+            line.textContent = `${g.guess}  => 按位正确 ${g.score} 个${g.score===curDigits?" ✅":""}\n`;
             body.appendChild(line);
             body.scrollTop = body.scrollHeight;
           }
@@ -210,6 +249,10 @@
         const r1 = await sb.from("rooms").select("*").eq("id", room_id).maybeSingle();
         room = r1.data || null;
 
+        // digits
+        curDigits = room?.digits || 4;
+        applyDigitsToInputs();
+
         // players
         const r2 = await sb.from("players").select("*").eq("room_id", room_id).order("joined_at");
         players = r2.data || [];
@@ -218,9 +261,8 @@
         const r3 = await sb.from("guesses").select("*").eq("room_id", room_id).order("created_at");
         guesses = r3.data || [];
 
-        // UI
         $("#gameCard").style.display = players.length>=2 ? "" : "none";
-        setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"}`);
+        setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"} | 位数：${curDigits}`);
 
         renderHeader();
         renderColumns();
@@ -236,13 +278,46 @@
 
       async function ensureRoom(){
         const { error } = await sb.from("rooms").upsert(
-          { id: room_id, status: "setup", turn_index: 0, player_count: 0, winner_id: null },
+          { id: room_id, status: "setup", turn_index: 0, player_count: 0, winner_id: null, digits: 4 },
           { onConflict: "id" }
         );
         if(error) throw error;
       }
 
+      async function hardResetForDigitsChange(newDigits){
+        // 改位数会清空历史与所有人秘密，避免混乱
+        await sb.from("guesses").delete().eq("room_id", room_id);
+        await sb.from("players").update({ ready:false, secret_plain:null }).eq("room_id", room_id);
+        await sb.from("rooms").update({ status:"setup", turn_index:0, winner_id:null, digits:newDigits }).eq("id", room_id);
+      }
+
       // actions
+      window.__setDigits = async (n) => {
+        if(!room) return;
+        if(![3,4,5].includes(n)) return;
+
+        // setup：任何人都能切；非 setup：只允许房主切，并且会重置
+        if(room.status !== "setup" && !isHost()){
+          return alert("游戏进行中只有房主可以切换位数（会重置房间）");
+        }
+
+        try{
+          if(room.status === "setup"){
+            const { error } = await sb.from("rooms").update({ digits:n }).eq("id", room_id);
+            if(error) throw error;
+          }else{
+            const ok = confirm("切换位数会重置房间（清空猜测并要求所有人重新提交）。确定吗？");
+            if(!ok) return;
+            await hardResetForDigitsChange(n);
+          }
+          addDebug("digits set to " + n);
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          alert("切换位数失败：" + (e?.message||e));
+        }
+      };
+
       window.__joinRoom = async () => {
         const name = ($("#nameInput").value||"").trim();
         if(!name) return alert("请输入名字");
@@ -268,13 +343,14 @@
 
       window.__setSecret = async () => {
         if(!me_id) return alert("请先加入房间");
-        let s = digitsOnly($("#secretInput").value).slice(0,4);
+        let s = digitsOnly($("#secretInput").value).slice(0, curDigits);
         $("#secretInput").value = s;
-        if(!is4Digits(s)) return alert("请输入完整4位数字");
+        if(!isNDigits(s, curDigits)) return alert(`请输入完整${curDigits}位数字`);
+
         try{
           const { error } = await sb.from("players").update({ secret_plain: s, ready: true }).eq("id", me_id);
           if(error) throw error;
-          $("#secretHint").textContent = "✅ 已提交秘密（ready=true）";
+          $("#secretHint").textContent = `✅ 已提交秘密（${curDigits}位，ready=true）`;
           addDebug("setSecret success");
           await fetchAll();
         }catch(e){
@@ -287,7 +363,7 @@
       window.__startGame = async () => {
         if(!isHost()) return alert("只有房主可以开始");
         if(players.length<2) return alert("至少2人");
-        if(players.some(p=>!p.ready)) return alert("还有人没提交四位数");
+        if(players.some(p=>!p.ready)) return alert("还有人没提交数字");
 
         try{
           const { data, error } = await sb
@@ -296,11 +372,10 @@
             .eq("id", room_id)
             .select("*")
             .single();
-
           if(error) throw error;
 
           addDebug("game started ✅ status=" + data.status);
-          await fetchAll(); // 立刻刷新 UI
+          await fetchAll();
         }catch(e){
           console.error(e);
           addDebug("start failed: " + (e?.message||e));
@@ -324,24 +399,27 @@
 
       window.__submitGuess = async () => {
         if(!room || room.status!=="playing") return;
-        const cur = curTurnPlayer();
-        if(!cur || cur.id!==me_id) return alert("还没轮到你");
 
-        let guess = digitsOnly($("#guessInput").value).slice(0,4);
+        const cur = curTurnPlayer();
+        if(!cur || cur.id!==me_id){
+          // ✅ 再加一层硬限制：就算按钮被别的方式点到，也直接拒绝
+          return alert("还没轮到你");
+        }
+
+        let guess = digitsOnly($("#guessInput").value).slice(0, curDigits);
         $("#guessInput").value = guess;
-        if(!is4Digits(guess)) return alert("请输入完整4位数字");
+        if(!isNDigits(guess, curDigits)) return alert(`请输入完整${curDigits}位数字`);
 
         const target = targetOfTurn();
         if(!target) return;
 
-        if(!target.secret_plain || !is4Digits(target.secret_plain)){
-          return alert("目标玩家还没提交四位数");
+        if(!target.secret_plain || !isNDigits(target.secret_plain, curDigits)){
+          return alert(`目标玩家还没提交${curDigits}位数字`);
         }
 
-        const score = scoreExact(target.secret_plain, guess);
+        const score = scoreExactN(target.secret_plain, guess);
 
         try{
-          // 写入 guess
           const { error } = await sb.from("guesses").insert({
             room_id,
             turn_index: room.turn_index||0,
@@ -352,8 +430,7 @@
           });
           if(error) throw error;
 
-          // 更新 room：胜利 or 下一回合
-          if(score===4){
+          if(score===curDigits){
             await sb.from("rooms").update({ status:"ended", winner_id: cur.id }).eq("id", room_id);
           }else{
             const nextTurn = ((room.turn_index||0)+1) % players.length;
@@ -373,6 +450,10 @@
       $("#resetRoomBtn").onclick = window.__resetRoom;
       $("#guessBtn").onclick = window.__submitGuess;
 
+      $("#d3Btn").onclick = ()=>window.__setDigits(3);
+      $("#d4Btn").onclick = ()=>window.__setDigits(4);
+      $("#d5Btn").onclick = ()=>window.__setDigits(5);
+
       // kick off
       await ensureRoom();
       await fetchAll();
@@ -384,7 +465,7 @@
 
 <body>
 <div class="wrap">
-  <h1>猜四位数（联机房间版：链接即房间）</h1>
+  <h1>猜数字（联机房间版：链接即房间）</h1>
 
   <div class="card">
     <div class="row" style="justify-content:space-between">
@@ -394,6 +475,9 @@
         <span class="pill" id="statusPill">Status</span>
       </div>
       <div class="row">
+        <button id="d3Btn" class="ghost">3位</button>
+        <button id="d4Btn" class="ghost active">4位</button>
+        <button id="d5Btn" class="ghost">5位</button>
         <button id="copyLinkBtn" onclick="window.__copyRoomLink()">复制房间链接</button>
         <button class="danger" id="leaveBtn" onclick="window.__leaveRoom()">退出房间</button>
       </div>
@@ -409,7 +493,7 @@
     </div>
 
     <div class="row" style="margin-top:10px">
-      <label class="muted">设置你的四位数</label>
+      <label class="muted">设置你的数字</label>
       <input id="secretInput" class="small" placeholder="例如 0854" maxlength="4" inputmode="numeric" autocomplete="off" />
       <button id="setSecretBtn" class="primary">提交秘密</button>
       <span class="muted" id="secretHint"></span>
