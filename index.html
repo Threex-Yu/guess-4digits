@@ -76,7 +76,7 @@
     }
   </style>
 
-  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script src="./supabase.js"></script>
 
   <script defer>
   (() => {
@@ -564,9 +564,29 @@
       $("#d4Btn").onclick = ()=>window.__setDigits(4);
       $("#d5Btn").onclick = ()=>window.__setDigits(5);
 
-      await ensureRoom();
-      await fetchAll();
-      subscribeRealtime();
+      // ✅ 先把页面显示出来（非常关键：手机上不再像“打不开”）
+      setLobby("页面已加载。准备连接服务器…（手机网络慢的话等几秒）");
+      renderHeader?.(); // 如果你有这个函数就保留，没有就删掉这行
+      renderColumns?.(); // 同上
+      
+      // ✅ 1) 延迟 300ms 再做 ensureRoom + fetchAll
+      setTimeout(async () => {
+        try {
+          await ensureRoom();
+          await fetchAll();
+        } catch (e) {
+          console.error(e);
+          setLobby("⚠️ 服务器连接失败/很慢：你仍可复制链接。稍后再试刷新。");
+          addDebug("boot failed: " + (e?.message || e));
+          return;
+        }
+      
+        // ✅ 2) 再延迟 800ms 建 Realtime（WebSocket 对手机最慢）
+        setTimeout(() => {
+          try { subscribeRealtime(); }
+          catch (e) { console.error(e); addDebug("realtime failed: " + (e?.message||e)); }
+        }, 800);
+      }, 300);
     });
   })();
   </script>
@@ -651,4 +671,5 @@
 
 </body>
 </html>
+
 
