@@ -96,6 +96,14 @@
       const m = h.match(/room=([a-zA-Z0-9_-]{4,32})/);
       return m ? m[1] : null;
     }
+    function padNum(num, n){
+      return String(num).padStart(n, "0");
+    }
+    function randDigits(n){
+      let s="";
+      for(let i=0;i<n;i++) s += Math.floor(Math.random()*10);
+      return s;
+    }
 
     window.__copyRoomLink = () => prompt("复制下面链接发给朋友：", location.href);
     window.__leaveRoom = () => location.reload();
@@ -105,6 +113,8 @@
     window.__resetRoom = () => alert("页面还在初始化，请稍等");
     window.__submitGuess = () => alert("页面还在初始化，请稍等");
     window.__setDigits = (n) => alert("页面还在初始化，请稍等");
+    window.__addBot = () => alert("页面还在初始化，请稍等");
+    window.__setBotLevel = (lv) => alert("页面还在初始化，请稍等");
 
     document.addEventListener("DOMContentLoaded", async () => {
       const $ = (s)=>document.querySelector(s);
@@ -154,6 +164,7 @@
       let room = null;
       let guesses = [];
       let curDigits = 4;
+      let botLevel = 2; // 1=简单 2=普通 3=困难（默认）
 
       // ✅ 防止“重复弹窗”
       let lastWinRoomStatus = null;
@@ -175,6 +186,12 @@
         $("#d3Btn").classList.toggle("active", curDigits===3);
         $("#d4Btn").classList.toggle("active", curDigits===4);
         $("#d5Btn").classList.toggle("active", curDigits===5);
+      }
+
+      function applyBotLevelUI(){
+        $("#botEasyBtn").classList.toggle("active", botLevel===1);
+        $("#botNormalBtn").classList.toggle("active", botLevel===2);
+        $("#botHardBtn").classList.toggle("active", botLevel===3);
       }
 
       $("#secretInput").addEventListener("input", ()=> {
@@ -200,7 +217,6 @@
         // ✅ 硬限制：只有轮到我才能输入+提交
         const myTurn = cur && me_id && cur.id===me_id;
         const canGuess = room?.status==="playing" && myTurn;
-
         $("#guessBtn").disabled = !canGuess;
         $("#guessInput").disabled = !canGuess;
 
@@ -218,6 +234,17 @@
         $("#d3Btn").disabled = !enableDigitsBtns;
         $("#d4Btn").disabled = !enableDigitsBtns;
         $("#d5Btn").disabled = !enableDigitsBtns;
+
+        // Bot：仅房主 setup 可添加；难度也建议 setup 才能切（简单点）
+        const bot = players.find(p=>p.is_bot===true);
+        $("#addBotBtn").disabled = !(isHost() && room?.status==="setup" && !bot);
+
+        const canSetBotLevel = isHost() && room?.status==="setup";
+        $("#botEasyBtn").disabled = !canSetBotLevel;
+        $("#botNormalBtn").disabled = !canSetBotLevel;
+        $("#botHardBtn").disabled = !canSetBotLevel;
+
+        applyBotLevelUI();
       }
 
       function renderColumns(){
@@ -275,7 +302,6 @@
         if(!room) return;
         if(room.status !== "ended") return;
 
-        // 防止重复弹
         if(lastWinRoomStatus==="ended" && lastWinnerId===room.winner_id) return;
         lastWinRoomStatus = room.status;
         lastWinnerId = room.winner_id;
@@ -283,7 +309,6 @@
         const winner = players.find(p=>p.id===room.winner_id);
         if(!winner) return;
 
-        // ✅ 如果我是赢家：大字恭喜
         if(me_id && room.winner_id === me_id){
           showModal("🎉恭喜你猜对啦！", "你赢啦！");
         } else {
@@ -296,7 +321,10 @@
         room = r1.data || null;
 
         curDigits = room?.digits || 4;
+        botLevel = room?.bot_level || 2;
+
         applyDigitsToInputs();
+        applyBotLevelUI();
 
         const r2 = await sb.from("players").select("*").eq("room_id", room_id).order("joined_at");
         players = r2.data || [];
@@ -305,11 +333,14 @@
         guesses = r3.data || [];
 
         $("#gameCard").style.display = players.length>=2 ? "" : "none";
-        setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"} | 位数：${curDigits}`);
+        const lvText = botLevel===1 ? "简单" : botLevel===2 ? "普通" : "困难";
+        setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"} | 位数：${curDigits} | 人机难度：${lvText}`);
 
         renderHeader();
         renderColumns();
         maybeShowWinnerModal();
+
+        await maybeBotTakeTurn();
       }
 
       function subscribeRealtime(){
@@ -322,7 +353,7 @@
 
       async function ensureRoom(){
         const { error } = await sb.from("rooms").upsert(
-          { id: room_id, status: "setup", turn_index: 0, player_count: 0, winner_id: null, digits: 4 },
+          { id: room_id, status: "setup", turn_index: 0, player_count: 0, winner_id: null, digits: 4, bot_level: 2 },
           { onConflict: "id" }
         );
         if(error) throw error;
@@ -332,7 +363,6 @@
         await sb.from("guesses").delete().eq("room_id", room_id);
         await sb.from("players").update({ ready:false, secret_plain:null }).eq("room_id", room_id);
         await sb.from("rooms").update({ status:"setup", turn_index:0, winner_id:null, digits:newDigits }).eq("id", room_id);
-        // 重置胜利弹窗状态
         lastWinRoomStatus = null;
         lastWinnerId = null;
       }
@@ -362,6 +392,22 @@
         }
       };
 
+      // ====== Bot 难度设置 ======
+      window.__setBotLevel = async (lv) => {
+        if(!room) return;
+        if(![1,2,3].includes(lv)) return;
+        if(!isHost() || room.status!=="setup") return alert("只有房主且在 setup 阶段可以设置人机难度");
+
+        try{
+          const { error } = await sb.from("rooms").update({ bot_level: lv }).eq("id", room_id);
+          if(error) throw error;
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          alert("设置难度失败：" + (e?.message||e));
+        }
+      };
+
       // 生成/读取本机唯一 client_id（每台设备一个）
       function getClientId(room_id){
         const k = `client_id:${room_id}`;
@@ -372,32 +418,31 @@
         }
         return v;
       }
-      
+
       let joining = false;
-      
+
       window.__joinRoom = async () => {
-        if(joining) return; // 防连点
+        if(joining) return;
         if(me_id) return alert("你已经加入过这个房间了（刷新页面即可继续）。");
-      
+
         const name = ($("#nameInput").value||"").trim();
         if(!name) return alert("请输入名字");
-      
+
         joining = true;
         $("#joinBtn").disabled = true;
-      
+
         try{
           await ensureRoom();
-      
+
           const client_id = getClientId(room_id);
-      
-          // ✅ 先查是否已经存在（防止之前成功但页面没记住）
+
           const existed = await sb
             .from("players")
             .select("*")
             .eq("room_id", room_id)
             .eq("client_id", client_id)
             .maybeSingle();
-      
+
           if(existed.data){
             me_id = existed.data.id;
             localStorage.setItem(`me_player_id:${room_id}`, me_id);
@@ -406,34 +451,14 @@
             await fetchAll();
             return;
           }
-      
-          // ✅ 再插入（数据库唯一索引兜底）
+
           const { data, error } = await sb
             .from("players")
             .insert({ room_id, name, client_id, is_bot:false, ready:false, secret_plain:null })
             .select("*")
             .single();
-      
-          if(error){
-            // 如果恰好并发/重复点击导致唯一冲突，再查一次拿到已有行
-            if(String(error.message||"").toLowerCase().includes("duplicate") || String(error.code||"")==="23505"){
-              const again = await sb
-                .from("players")
-                .select("*")
-                .eq("room_id", room_id)
-                .eq("client_id", client_id)
-                .maybeSingle();
-              if(again.data){
-                me_id = again.data.id;
-                localStorage.setItem(`me_player_id:${room_id}`, me_id);
-                addDebug("join recovered existing player_id=" + me_id);
-                await fetchAll();
-                return;
-              }
-            }
-            throw error;
-          }
-      
+          if(error) throw error;
+
           me_id = data.id;
           localStorage.setItem(`me_player_id:${room_id}`, me_id);
           addDebug("join success, player_id=" + me_id);
@@ -497,7 +522,6 @@
           await sb.from("players").update({ ready:false, secret_plain:null }).eq("room_id", room_id);
           await sb.from("rooms").update({ status:"setup", turn_index:0, winner_id:null }).eq("id", room_id);
           addDebug("room reset");
-          // 重置胜利弹窗状态
           lastWinRoomStatus = null;
           lastWinnerId = null;
           await fetchAll();
@@ -540,7 +564,6 @@
           if(error) throw error;
 
           if(score===curDigits){
-            // ✅ 猜中者立刻弹窗（更“即时”）
             showModal("🎉恭喜你猜对啦！", "你赢啦！");
             await sb.from("rooms").update({ status:"ended", winner_id: cur.id }).eq("id", room_id);
           }else{
@@ -554,6 +577,158 @@
         }
       };
 
+      // =======================
+      // ✅ 人机（Bot）+ 难度
+      // =======================
+      function getBot(){
+        return players.find(p=>p.is_bot===true) || null;
+      }
+
+      // easy: 完全随机
+      function botPickEasy(){
+        const max = Math.pow(10, curDigits);
+        return padNum(Math.floor(Math.random()*max), curDigits);
+      }
+
+      // normal: 随机抽样 + 约束检查（不卡顿）
+      function botPickNormal(botId, targetId){
+        const hist = guesses.filter(g => g.guesser_player_id===botId && g.target_player_id===targetId);
+        const max = Math.pow(10, curDigits);
+        const tries = curDigits===5 ? 15000 : 6000;
+
+        for(let t=0;t<tries;t++){
+          const cand = padNum(Math.floor(Math.random()*max), curDigits);
+          let ok=true;
+          for(const h of hist){
+            if(scoreExactN(cand, h.guess) !== h.score){ ok=false; break; }
+          }
+          if(ok) return cand;
+        }
+        return botPickEasy();
+      }
+
+      // hard: 全量枚举候选（5位最多100000，可接受）
+      function botPickHard(botId, targetId){
+        const hist = guesses.filter(g => g.guesser_player_id===botId && g.target_player_id===targetId);
+        const max = Math.pow(10, curDigits);
+
+        const candidates = [];
+        for(let x=0; x<max; x++){
+          const cand = padNum(x, curDigits);
+          let ok=true;
+          for(const h of hist){
+            if(scoreExactN(cand, h.guess) !== h.score){ ok=false; break; }
+          }
+          if(ok) candidates.push(cand);
+        }
+        if(candidates.length===0) return botPickEasy();
+        return candidates[Math.floor(Math.random()*candidates.length)];
+      }
+
+      let botActing = false;
+      let lastBotActionKey = "";
+
+      async function maybeBotTakeTurn(){
+        // 只让房主驱动 bot
+        if(!isHost()) return;
+        if(!room || room.status!=="playing") return;
+
+        const cur = curTurnPlayer();
+        if(!cur || !cur.is_bot) return;
+
+        const bot = cur;
+        const target = targetOfTurn();
+        if(!target) return;
+
+        if(!target.secret_plain || !isNDigits(target.secret_plain, curDigits)) return;
+
+        // 防重复
+        const key = `${room_id}|turn=${room.turn_index}|g=${guesses.length}|bot=${bot.id}`;
+        if(key === lastBotActionKey) return;
+        if(botActing) return;
+
+        botActing = true;
+        lastBotActionKey = key;
+
+        try{
+          // 不同难度不同“思考时间”
+          const delay = botLevel===1 ? 350 : botLevel===2 ? 650 : 900;
+          await new Promise(r=>setTimeout(r, delay));
+
+          let guess;
+          if(botLevel===1) guess = botPickEasy();
+          else if(botLevel===2) guess = botPickNormal(bot.id, target.id);
+          else guess = botPickHard(bot.id, target.id);
+
+          const score = scoreExactN(target.secret_plain, guess);
+
+          const { error } = await sb.from("guesses").insert({
+            room_id,
+            turn_index: room.turn_index||0,
+            guesser_player_id: bot.id,
+            target_player_id: target.id,
+            guess,
+            score
+          });
+          if(error) throw error;
+
+          if(score===curDigits){
+            await sb.from("rooms").update({ status:"ended", winner_id: bot.id }).eq("id", room_id);
+          }else{
+            const nextTurn = ((room.turn_index||0)+1) % players.length;
+            await sb.from("rooms").update({ turn_index: nextTurn }).eq("id", room_id);
+          }
+        }catch(e){
+          console.error(e);
+          addDebug("bot failed: " + (e?.message||e));
+        }finally{
+          botActing = false;
+        }
+      }
+
+      window.__addBot = async () => {
+        if(!room) return;
+        if(!isHost()) return alert("只有房主可以添加人机");
+        if(room.status!=="setup") return alert("请在开始游戏前（setup）添加人机");
+        if(getBot()) return alert("房间里已经有人机了");
+
+        try{
+          const botSecret = randDigits(curDigits);
+
+          const { data, error } = await sb
+            .from("players")
+            .insert({
+              room_id,
+              name: "🤖 Bot",
+              is_bot: true,
+              ready: true,
+              secret_plain: botSecret,
+              client_id: `BOT_${room_id}`
+            })
+            .select("*")
+            .single();
+
+          if(error){
+            const existed = await sb.from("players").select("*")
+              .eq("room_id", room_id).eq("client_id", `BOT_${room_id}`).maybeSingle();
+            if(existed.data){
+              alert("人机已存在 🤖");
+              await fetchAll();
+              return;
+            }
+            throw error;
+          }
+
+          addDebug("bot added: " + data.id);
+          alert("已添加人机 🤖（它已自动提交秘密）");
+          await fetchAll();
+        }catch(e){
+          console.error(e);
+          alert("添加人机失败：" + (e?.message||e));
+        }
+      };
+
+      // bind buttons
       $("#joinBtn").onclick = window.__joinRoom;
       $("#setSecretBtn").onclick = window.__setSecret;
       $("#startGameBtn").onclick = window.__startGame;
@@ -564,12 +739,14 @@
       $("#d4Btn").onclick = ()=>window.__setDigits(4);
       $("#d5Btn").onclick = ()=>window.__setDigits(5);
 
-      // ✅ 先把页面显示出来（非常关键：手机上不再像“打不开”）
+      $("#addBotBtn").onclick = window.__addBot;
+      $("#botEasyBtn").onclick = ()=>window.__setBotLevel(1);
+      $("#botNormalBtn").onclick = ()=>window.__setBotLevel(2);
+      $("#botHardBtn").onclick = ()=>window.__setBotLevel(3);
+
+      // 启动（你原来的延迟连接）
       setLobby("页面已加载。准备连接服务器…（手机网络慢的话等几秒）");
-      renderHeader?.(); // 如果你有这个函数就保留，没有就删掉这行
-      renderColumns?.(); // 同上
-      
-      // ✅ 1) 延迟 300ms 再做 ensureRoom + fetchAll
+
       setTimeout(async () => {
         try {
           await ensureRoom();
@@ -580,8 +757,7 @@
           addDebug("boot failed: " + (e?.message || e));
           return;
         }
-      
-        // ✅ 2) 再延迟 800ms 建 Realtime（WebSocket 对手机最慢）
+
         setTimeout(() => {
           try { subscribeRealtime(); }
           catch (e) { console.error(e); addDebug("realtime failed: " + (e?.message||e)); }
@@ -640,6 +816,10 @@
         <span class="pill" id="targetPill">目标</span>
       </div>
       <div class="row">
+        <button id="botEasyBtn" class="ghost">简单</button>
+        <button id="botNormalBtn" class="ghost active">普通</button>
+        <button id="botHardBtn" class="ghost">困难</button>
+        <button id="addBotBtn" class="ghost">添加人机 🤖</button>
         <button id="startGameBtn" class="primary">房主开始</button>
         <button id="resetRoomBtn" class="danger">重置房间</button>
       </div>
@@ -671,5 +851,3 @@
 
 </body>
 </html>
-
-
