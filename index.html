@@ -332,7 +332,8 @@
         const r3 = await sb.from("guesses").select("*").eq("room_id", room_id).order("created_at");
         guesses = r3.data || [];
 
-        $("#gameCard").style.display = players.length>=2 ? "" : "none";
+        const shouldShowGameCard = (players.length >= 2) || (room?.status === "setup" && isHost());
+        $("#gameCard").style.display = shouldShowGameCard ? "" : "none";  
         const lvText = botLevel===1 ? "简单" : botLevel===2 ? "普通" : "困难";
         setLobby(`当前人数：${players.length} | 就绪：${players.filter(p=>p.ready).length}/${players.length} | 状态：${room?room.status:"(无房间)"} | 位数：${curDigits} | 人机难度：${lvText}`);
 
@@ -851,3 +852,4 @@
 
 </body>
 </html>
+
